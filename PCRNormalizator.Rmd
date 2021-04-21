@@ -1,0 +1,358 @@
+---
+title: "PCRNormalizator"
+author: "RDA and MB"
+date: "4/18/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r raw data loading, echo=FALSE}
+rawMirna <- read.table(file.choose(),
+                       header = TRUE,
+                       row.names = 1,
+                       stringsAsFactors = FALSE)
+#write.table(data.frame("sample"= colnames(rawMirna),"group" = c(rep("C",5),rep("D",5),rep("S",5))),file="data/samples.txt", sep="\t",quote = FALSE,row.names = FALSE)
+            
+samples <- read.table(file.choose(),
+                      header = TRUE,
+                      stringsAsFactors = TRUE)
+            
+
+```
+
+
+
+```{r simple stats}
+
+NAvalue <- rowSums(is.na(rawMirna))
+
+# calculate %cv foreach miRNA/gene foreach condition
+cv.perc <- apply(rawMirna,1,function(x) sd(x, na.rm=TRUE)/mean(x, na.rm=TRUE)*100) ### for each condition
+# cv.perc.C <- apply(rawMirna[,1:5],1,function(x) sd(x, na.rm=TRUE)/mean(x, na.rm=TRUE)*100)
+# cv.perc.D <- apply(rawMirna[,6:10],1,function(x) sd(x, na.rm=TRUE)/mean(x, na.rm=TRUE)*100)
+# cv.perc.S <- apply(rawMirna[,11:15],1,function(x) sd(x, na.rm=TRUE)/mean(x, na.rm=TRUE)*100)
+
+# calculate MAD 
+Mad <- apply(rawMirna,1,function(x) mad(x,na.rm=TRUE))
+
+cv.sample <- apply(rawMirna,2,function(x) sd(x, na.rm=TRUE)/mean(x, na.rm=TRUE))
+
+cv.score <- apply(rawMirna,1,function(x) sd(x, na.rm=TRUE)/mean(x, na.rm=TRUE))/sum(cv.sample)
+
+stat.rank <- cbind(cv.score,
+                   NAvalue,
+                   "cv%" = sort(cv.perc,index.return=TRUE)$x,
+                   "MAD" = sort(Mad,index.return=TRUE)$x,
+                   "cv%.C" = sort(cv.perc.C,index.return=TRUE)$x,
+                   "cv%.D" = sort(cv.perc.D,index.return=TRUE)$x,
+                   "cv%.S" = sort(cv.perc.S,index.return=TRUE)$x)
+row.names(stat.rank) <- rownames(rawMirna)
+
+
+```
+
+
+```{r Ct imputation}
+##### distinguere tra undetermined or absent 
+# qPCR.data <- replaceNAs(qPCR.data, newNA = 40) 
+# in quanto !! na.rm in selectHKs non funziona!!!! 
+```
+
+```{r parsing input for NormqPCR packg}
+#prepare input (sample x 1 column CT)
+Sample <- rep(colnames(rawMirna)[1],129)
+for (i in c(2:15)){
+  Sample <-c(Sample,rep(colnames(rawMirna)[i],129)) 
+}
+Detector <- rep(rownames(rawMirna),15)
+
+Cq <- as.numeric(rawMirna[,1])
+for (i in c(2:15)){
+  Cq <-c(Cq,as.numeric(rawMirna[,i])) 
+}
+
+rawMirna.4NormqPCR <- as.data.frame(cbind(Sample,Detector,Cq))
+write.table(rawMirna.4NormqPCR, "data/raw.4NormqPCR.txt",sep = "\t")
+
+
+
+
+
+
+```
+
+```{r run geNorm, warning=FALSE}
+#BiocManager::install("NormqPCR")
+library(NormqPCR)
+
+qPCR.data <- read.qPCR("data/raw.4NormqPCR.txt", 
+                       phenoData = as(rawMirna, "AnnotatedDataFrame"))
+
+#qPCR.data <- replaceNAs(qPCR.data, newNA = 40) 
+
+
+
+geNorm.NormqPCR.Res <- selectHKs(qPCR.data, method = "geNorm",
+                                   minNrHKs = 2, log =FALSE, # per l'opzione log, vedi https://www.researchgate.net/post/geNorm_in_NormqPCR_package_of_R
+                                   Symbols = featureNames(qPCR.data),na.rm=TRUE)
+
+
+
+
+```
+```{r run Normfinder}
+
+# NormFinder.NormqPCR.Res <- selectHKs(qPCR.data, method = "NormFinder",
+#                                      group=samples$group,
+#                                      trace = TRUE,
+#                                      minNrHKs = 2, log =FALSE,
+#                                      Symbols = featureNames(qPCR.data),na.rm=TRUE)
+
+
+res.normfinder <- stabMeasureRho(qPCR.data, group = samples$group, log = FALSE,returnAll=TRUE)
+
+```
+```{r Venn}
+library("VennDiagram")
+HKlist <- list(geNorm = geNorm.NormqPCR.Res$ranking[1:20],
+               normFinder = names(sort(res.normfinder$rho)[1:20]))
+
+selected.paper <- c("hsa.miR.381","hsa.miR.150","hsa.miR.373")
+
+
+venn.diagram (HKlist,
+              imagetype ="png",lwd=2,
+              main = "",
+              fill = c( "red", "blue"),
+              height = 4,width = 4,
+              resolution = 1000,
+              col = "transparent",
+              alpha = 0.5, cex= 1,
+              category.names = c( "geNorm","normFinder"), 
+              reverse = FALSE, inverted = FALSE, 
+              cat.dist = 0.1, cat.cex = 1, 
+              cat.col = "black", 
+              cat.fontface = "plain", 
+              cat.fontfamily = "serif", 
+              cat.prompts = FALSE,ext.text = FALSE, 
+              ext.pos = "", ext.percent = "", ext.line.lwd = "", ext.line.lty = "", ext.dist = "",ext.length = "", 
+              euler.d = TRUE, 
+              scaled = TRUE, 
+              sep.dist = 0.05, 
+              #offset = 2,
+              description = "", 
+              units = "in", 
+              filename = "res.Venn.paper.png" )
+
+
+
+```
+```{r combine stability scores}
+df1 <- data.frame("geNorm.rank"=geNorm.NormqPCR.Res$ranking,
+                    "geNorm.meanM"=c(sort(geNorm.NormqPCR.Res$meanM),geNorm.NormqPCR.Res$meanM[1]))
+
+df2<- merge(df1,
+            data.frame("normFinder.rank"=names(sort(res.normfinder$rho)),
+                       "normFinder.rho"=sort(res.normfinder$rho)),by.x=1,by.y=1)
+
+SS <- sqrt(df2$geNorm.meanM^2+df2$normFinder.rho^2)
+
+df2.SS<- cbind(df2,SS)
+df3<- merge(df2.SS,
+            data.frame(row.names(rawMirna.noNA),
+                       "cv.score"=cv.score),by.x=1,by.y=1)
+
+SSS <- sqrt(df2$geNorm.meanM^2+df2$normFinder.rho^2+df3$cv.score^2)
+df3.SSS<- cbind(df3,SSS)
+
+row.names(df3.SSS) <- gsub("\\.","-",df3.SSS$geNorm.rank)
+
+write.table(round(df3.SSS[,c(2,3,5,6)],digits = 4),file="stabilityScore.txt",
+            sep = "\t",quote = FALSE,row.names = TRUE)
+
+
+
+finalrank <- order(df3.SSS$SSS,decreasing = FALSE)
+df.F <- df3.SSS[finalrank,][1:10,]
+df.F$geNorm.rank <- gsub("\\.","-",df.F$geNorm.rank)
+df.F$geNorm.rank <- factor(df.F$geNorm.rank, levels = df.F$geNorm.rank)
+
+
+```
+
+```{r plots}
+library(ggpubr)
+#library(ggplot2)
+library(gridExtra)
+
+
+plots <- list()
+
+
+plots[[1]] <- ggline(df.F, x = "geNorm.rank", y = "geNorm.meanM",color = "blue",title = "geNorm",
+                     ylab = "mean M") + border("black") + grids(linetype = "dashed") + 
+  rotate_x_text(90) + rremove("xlab") + font("ylab", size = 14)
+
+plots[[2]] <- ggline(df.F, x = "geNorm.rank", y = "cv.score",color = "orange",title = "CV score",
+                     ylab = "CV score") + border("black") + grids(linetype = "dashed") + 
+  rotate_x_text(90) + rremove("xlab") + font("ylab", size = 14)
+
+plots[[3]] <- ggline(df.F, x = "geNorm.rank", y = "normFinder.rho",color = "darkgreen",title = "NormFinder",
+                     ylab = "rho") + border("black") + grids(linetype = "dashed") + 
+  rotate_x_text(90) + rremove("xlab") + font("ylab", size = 14)
+
+plots[[4]] <- ggline(df.F, x = "geNorm.rank", y = "SSS",color = "red",title = "Summarized Stability Score",
+                     ylab = "SSS") + border("black") + grids(linetype = "dashed") + 
+  rotate_x_text(90) + rremove("xlab") + font("ylab", size = 14)
+
+pdf("stabilityScores.S1.pdf",6,12)
+grid.arrange(grobs = plots[1:3], ncol = 1)
+dev.off()
+pdf("stabilityScores.1.pdf",6,4)
+grid.arrange(grobs = plots[4], ncol = 1)
+dev.off()
+
+```
+
+
+
+
+
+
+
+```{r eval=FALSE, include=FALSE}
+##Nota: provato anche geNorm per group ma non ha senso in questo caso perchè sono 
+##tutti campioni dello stesso tipo
+
+##########PCA
+
+library("missMDA")
+nb <- estim_ncpPCA(rawMirna,method.cv = "Kfold")
+res.comp <- imputePCA(rawMirna, ncp = nb$ncp) # iterativePCA algorithm
+res.comp$completeObs[1:3,] # the imputed data set
+
+res.pca <- prcomp(t(res.comp$completeObs), scale = TRUE)
+
+library("factoextra")
+fviz_eig(res.pca, addlabels = TRUE, ylim = c(0, 50))
+
+fviz_pca_ind(res.pca,
+             #col.ind = "cos2", # Color by the quality of representation
+             #gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE     # Avoid text overlapping
+)
+
+##### normMirna
+normMirna <- read.table("paper/normMirna_Giusy.txt",header = TRUE,sep="\t",row.names = 1)
+nb.normMirna <- estim_ncpPCA(normMirna,method.cv = "Kfold")
+res.comp.normMirna <- imputePCA(normMirna, ncp = nb.normMirna$ncp) # iterativePCA algorithm
+res.comp.normMirna$completeObs[1:3,] # the imputed data set
+
+res.pca.normMirna <- prcomp(t(res.comp.normMirna$completeObs), scale = TRUE)
+res.pca.normMirna.noMA <- prcomp(t(na.omit(normMirna)), scale = TRUE)
+
+fviz_eig(res.pca.normMirna, addlabels = TRUE, ylim = c(0, 50))
+
+fviz_pca_ind(res.pca.normMirna,
+             #col.ind = "cos2", # Color by the quality of representation
+             #gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE     # Avoid text overlapping
+)
+fviz_pca_ind(res.pca.normMirna.noMA,
+             mean.point = FALSE,
+             col.ind = c(rep("S",5),rep("C",5),rep("D",5)), # color by groups
+             palette = c("#00AFBB", "#E7B800", "#FC4E07"),
+             addEllipses = TRUE, # Concentration ellipses 
+             legend.title = "Groups",
+             #ellipse.type = "confidence",
+             #ellipse.level = 0.95,
+             repel = TRUE     # Avoid text overlapping
+)
+
+fviz_pca_ind(res.pca.normMirna,
+             #geom.ind = "text", # show points only (nbut not "text")
+             col.ind = c(rep("S",5),rep("C",5),rep("D",5)), # color by groups
+             palette = c("#00AFBB", "#E7B800", "#FC4E07"),
+             addEllipses = TRUE, # Concentration ellipses
+             legend.title = "Groups"
+)
+
+fviz_pca_ind(res.pca,
+             #geom.ind = "text", # show points only (nbut not "text")
+             col.ind = Class, # color by groups
+             palette = c("#00AFBB", "#E7B800", "#FC4E07"),
+             addEllipses = TRUE, # Concentration ellipses
+             legend.title = "Groups"
+)
+
+fviz_pca_ind(res.pca.mynormMirna,
+             #geom.ind = "text", # show points only (nbut not "text")
+             col.ind = Class, # color by groups
+             palette = c("#00AFBB", "#E7B800", "#FC4E07"),
+             addEllipses = TRUE, # Concentration ellipses
+             legend.title = "Groups"
+)
+
+
+
+########### mann-withney
+#C vs S
+pval <- apply(normMirna,MARGIN = 1,function(x) wilcox.test(as.numeric(x[,c(6:10)]),
+                                                    as.numeric(x[,c(1:5)]))$p.value)
+pval <- c()
+for (i in 1:119){
+  pval <- c(pval,wilcox.test(as.numeric(normMirna[i,c(6:10)]),
+              as.numeric(normMirna[i,c(1:5)]))$p.value)
+}
+row.names(normMirna)[which(pval <=0.05)]
+
+pval <- c()
+for (i in 1:119){
+  pval <- c(pval,wilcox.test(as.numeric(newNorm[i,c(6:10)]),
+                             as.numeric(newNorm[i,c(1:5)]))$p.value)
+}
+row.names(normMirna)[which(pval <=0.05)]
+
+
+
+
+
+
+
+
+
+
+
+
+
+###########ripartire da qui per normalizzazione + test
+
+
+###################  normalizzo
+hkgs<-c("hsa-miR-381", "hsa-miR-150", "hsa-miR-373")
+qPCRBatch.norm <- deltaCq(qPCRBatch = qPCR.data.1, hkgs = hkgs, calc="arith")
+head(exprs(qPCRBatch.norm))
+
+contM <- cbind(c(rep(0,10),rep(1,5)),c(rep(1,5),rep(0,10)),c(rep(0,5),rep(1,5),rep(0,5)))
+colnames(contM) <- c("C","D","S")
+rownames(contM) <- sampleNames(qPCRBatch.norm)
+contM
+res.deltadeltaCq <- deltaDeltaCq(qPCRBatch = qPCR.data, maxNAControl = 3, 
+                                 maxNACase = 3, hkgs = hkgs, contrastM = contM, 
+                                 case = "C", control = "S",paired = TRUE,hkgCalc = "geom",
+                                 statCalc = "geom")
+
+library("HTqPCR")
+mannwhitneyCtData(qPCRBatch.norm, groups = c(rep("C",5),rep("D",5),rep("S",5)), calibrator = "S", alternative = "two.sided", paired = FALSE, replicates = FALSE, sort = TRUE, stringent = TRUE, p.adjust = "BH")
+
+apply(qPCRBatch.norm@assayData$exprs,MARGIN = 1, function(x) wilcox.test(x[,1:5], x[,11:15],
+            alternative = "two.sided",
+            mu = 0, paired = FALSE, exact = NULL, correct = TRUE,
+            conf.int = FALSE, conf.level = 0.95))
+
+```
+
