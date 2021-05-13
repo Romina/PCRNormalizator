@@ -1,0 +1,156 @@
+---
+title: "PCRNormalizator v1.0"
+author: "RDA and MB"
+date: "5/11/2021"
+output: html_notebook
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Data loading:
+The input data are:
+
+- the matrix with Ct values for each miRNA (row) and each sample (column) 
+- a sample metadata file, i.e. a tab delimited txt file with first column of sample names (matching Ct matrix's sample names) and second column with group specifications
+See example files into data folder.
+
+```{r raw data loading, echo=FALSE}
+message('Please choose Ct matrix (.txt) to load:')
+rawMirna <- read.table(file.choose(),
+                       header = TRUE,
+                       row.names = 1,
+                       stringsAsFactors = FALSE)
+
+message('Please add sample metadata to load:')
+samples <- read.table(file.choose(),
+                      header = TRUE,
+                      stringsAsFactors = TRUE)
+  
+```
+
+### Step1: parsing input data for NormqPCR and load it
+
+```{r parsing input for NormqPCR packg}
+library(reshape2)
+
+write.table(melt(cbind(rawMirna, Detector =row.names(rawMirna)),
+            id.vars       = "Detector",
+            variable.name = "Sample",
+            value.name    = "Cq")[c(2,1,3)], 
+            file = "raw.4NormqPCR.txt",
+            sep = "\t")
+
+
+```
+
+
+
+```{r load qPCR data, message=FALSE, warning=FALSE, include=FALSE}
+#BiocManager::install("NormqPCR")
+library(NormqPCR)
+
+qPCR.data <- read.qPCR("raw.4NormqPCR.txt", 
+                       phenoData = as(rawMirna, "AnnotatedDataFrame"))
+file.remove("raw.4NormqPCR.txt")
+```
+
+
+### Step2: run geNorm
+
+```{r run geNorm, echo=TRUE, message=TRUE, warning=FALSE}
+geNorm.NormqPCR.Res <- selectHKs(qPCR.data, method = "geNorm",
+                                   minNrHKs = 2, log =FALSE, 
+# per l'opzione log, vedi https://www.researchgate.net/post/geNorm_in_NormqPCR_package_of_R
+                                   Symbols = featureNames(qPCR.data),na.rm=TRUE)
+
+
+```
+
+### Step3: run Normfinder
+
+```{r run Normfinder, include=FALSE}
+res.normfinder <- stabMeasureRho(replaceNAs(qPCR.data, newNA = 40), 
+                                 group = samples$group, 
+                                 log = FALSE,returnAll=TRUE)
+
+```
+
+### Step4: calculate cv score
+```{r calculate cv score}
+cv.sample <- apply(rawMirna,2,function(x) sd(x, na.rm=TRUE)/mean(x, na.rm=TRUE))
+
+cv.score <- apply(rawMirna,1,function(x) sd(x, na.rm=TRUE)/
+                    mean(x, na.rm=TRUE))/
+                    sum(cv.sample)
+```
+
+
+
+### Step5: combining all scores and calculating final Summarized Stability Score (SSS)
+It produces stabilityScore.txt file
+
+
+```{r combine stability scores}
+df.rank <- Reduce(function(d1, d2) merge(d1, d2, by = "mirna",all=TRUE),
+       list(data.frame("mirna"=gsub("\\.","-",geNorm.NormqPCR.Res$ranking),
+                    "geNorm.meanM"=c(sort(geNorm.NormqPCR.Res$meanM),geNorm.NormqPCR.Res$meanM[1])), 
+            data.frame("mirna"=gsub("\\.","-",names(res.normfinder$rho)),
+                       "normFinder.rho"=res.normfinder$rho), 
+            data.frame("mirna"=row.names(rawMirna),
+                       "cv.score"=cv.score)))        
+
+            
+            
+df.rank$SSS <- sqrt(df.rank$geNorm.meanM^2+df.rank$normFinder.rho^2+df.rank$cv.score^2)
+df.rank[-1] <- round(df.rank[-1],digits = 4)
+
+df.rank.F <- df.rank[order(df.rank$SSS),]
+
+
+write.table(df.rank.F,file="stabilityScore.txt",
+            sep = "\t",quote = FALSE,row.names = FALSE)
+
+
+
+df.F <- df3.SSS[finalrank,][1:10,]
+df.F$geNorm.rank <- gsub("\\.","-",df.F$geNorm.rank)
+df.F$geNorm.rank <- factor(df.F$geNorm.rank, levels = df.F$geNorm.rank)
+
+
+```
+
+
+### Step6: plot scores for 10 most stable mirnas according to the SSS
+Plots are saved in stabilityScore.pdf
+```{r plots, echo=FALSE}
+library(ggpubr)
+library(gridExtra)
+
+
+plots <- list()
+
+
+plots[[1]] <- ggline(df.rank.F[1:10,], x = "mirna", y = "geNorm.meanM",color = "blue",title = "geNorm",
+                     ylab = "mean M") + border("black") + grids(linetype = "dashed") + 
+  rotate_x_text(90) + rremove("xlab") + font("ylab", size = 14)
+
+plots[[2]] <- ggline(df.rank.F[1:10,], x = "mirna", y = "cv.score",color = "orange",title = "CV score",
+                     ylab = "CV score") + border("black") + grids(linetype = "dashed") + 
+  rotate_x_text(90) + rremove("xlab") + font("ylab", size = 14)
+
+plots[[3]] <- ggline(df.rank.F[1:10,], x = "mirna", y = "normFinder.rho",color = "darkgreen",title = "NormFinder",
+                     ylab = "rho") + border("black") + grids(linetype = "dashed") + 
+  rotate_x_text(90) + rremove("xlab") + font("ylab", size = 14)
+
+plots[[4]] <- ggline(df.rank.F[1:10,], x = "mirna", y = "SSS",color = "red",title = "Summarized Stability Score",
+                     ylab = "SSS") + border("black") + grids(linetype = "dashed") + 
+  rotate_x_text(90) + rremove("xlab") + font("ylab", size = 14)
+
+pdf("stabilityScores.pdf",6,16)
+grid.arrange(grobs = plots[1:4], ncol = 1)
+dev.off()
+
+
+```
