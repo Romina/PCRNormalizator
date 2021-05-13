@@ -1,15 +1,17 @@
 ---
-title: "PCRNormalizator"
+title: "PCRNormalizator v1.0"
 author: "RDA and MB"
 date: "5/11/2021"
-output: html_document
+output: html_notebook
 ---
+
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 ## Data loading:
 The input data are:
+
 - the matrix with Ct values for each miRNA (row) and each sample (column) 
 - a sample metadata file, i.e. a tab delimited txt file with first column of sample names (matching Ct matrix's sample names) and second column with group specifications
 See example files into data folder.
@@ -28,6 +30,7 @@ samples <- read.table(file.choose(),
   
 ```
 
+### Step1: parsing input data for NormqPCR and load it
 
 ```{r parsing input for NormqPCR packg}
 library(reshape2)
@@ -42,6 +45,8 @@ write.table(melt(cbind(rawMirna, Detector =row.names(rawMirna)),
 
 ```
 
+
+
 ```{r load qPCR data, message=FALSE, warning=FALSE, include=FALSE}
 #BiocManager::install("NormqPCR")
 library(NormqPCR)
@@ -52,9 +57,9 @@ file.remove("raw.4NormqPCR.txt")
 ```
 
 
+### Step2: run geNorm
 
-
-```{r run geNorm, message=FALSE, warning=FALSE, include=FALSE}
+```{r run geNorm, echo=TRUE, message=TRUE, warning=FALSE}
 geNorm.NormqPCR.Res <- selectHKs(qPCR.data, method = "geNorm",
                                    minNrHKs = 2, log =FALSE, 
 # per l'opzione log, vedi https://www.researchgate.net/post/geNorm_in_NormqPCR_package_of_R
@@ -63,7 +68,7 @@ geNorm.NormqPCR.Res <- selectHKs(qPCR.data, method = "geNorm",
 
 ```
 
-
+### Step3: run Normfinder
 
 ```{r run Normfinder, include=FALSE}
 res.normfinder <- stabMeasureRho(replaceNAs(qPCR.data, newNA = 40), 
@@ -72,16 +77,22 @@ res.normfinder <- stabMeasureRho(replaceNAs(qPCR.data, newNA = 40),
 
 ```
 
-
-```{r combine stability scores}
+### Step4: calculate cv score
+```{r calculate cv score}
 cv.sample <- apply(rawMirna,2,function(x) sd(x, na.rm=TRUE)/mean(x, na.rm=TRUE))
 
 cv.score <- apply(rawMirna,1,function(x) sd(x, na.rm=TRUE)/
                     mean(x, na.rm=TRUE))/
                     sum(cv.sample)
+```
 
 
 
+### Step5: combining all scores and calculating final Summarized Stability Score (SSS)
+It produces stabilityScore.txt file
+
+
+```{r combine stability scores}
 df.rank <- Reduce(function(d1, d2) merge(d1, d2, by = "mirna",all=TRUE),
        list(data.frame("mirna"=gsub("\\.","-",geNorm.NormqPCR.Res$ranking),
                     "geNorm.meanM"=c(sort(geNorm.NormqPCR.Res$meanM),geNorm.NormqPCR.Res$meanM[1])), 
@@ -111,8 +122,9 @@ df.F$geNorm.rank <- factor(df.F$geNorm.rank, levels = df.F$geNorm.rank)
 ```
 
 
-
-```{r plots}
+### Step6: plot scores for 10 most stable mirnas according to the SSS
+Plots are saved in stabilityScore.pdf
+```{r plots, echo=FALSE}
 library(ggpubr)
 library(gridExtra)
 
@@ -142,4 +154,3 @@ dev.off()
 
 
 ```
-
