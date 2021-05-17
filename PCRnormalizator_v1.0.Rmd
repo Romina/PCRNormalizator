@@ -112,13 +112,6 @@ df.rank.F <- df.rank[order(df.rank$SSS),]
 write.table(df.rank.F,file="stabilityScore.txt",
             sep = "\t",quote = FALSE,row.names = FALSE)
 
-
-
-df.F <- df3.SSS[finalrank,][1:10,]
-df.F$geNorm.rank <- gsub("\\.","-",df.F$geNorm.rank)
-df.F$geNorm.rank <- factor(df.F$geNorm.rank, levels = df.F$geNorm.rank)
-
-
 ```
 
 
